@@ -54,6 +54,8 @@
    #include "tpy_class.ch"
 #endif
 
+#define __CHATID( uChatId )              iif( HB_ISSTRING( uChatId ), Val( uChatId ), uChatId )
+
 
 /** Utilizado para generar el hash de parametros definitivos en un metodo.
  */
@@ -172,6 +174,7 @@ CLASS tlgrmBot
 
    METHOD sendMediaGroup( uChatId, aMedia, cText, lDisableNotification, nReplyToMessageId )
 
+   METHOD sendAnimation( uChatId, cAnimationPath, oMsg, hOptionals )
    METHOD sendVideo( uChatId, cCaption, cImagePath, oMsg, hOptionals )
    METHOD sendPhoto( uChatId, cCaption, cImagePath, oMsg, hOptionals )
    METHOD SendPoll( uChatId, cQuestion, aOptions, hOptionals, hOthers )
@@ -183,7 +186,7 @@ CLASS tlgrmBot
    METHOD sendYesNo( uChatId, cText, oMsg, ... )
 
    METHOD inlineChoice( uChatId, cText, aOptions, oMsg, ... ) 
-//   METHOD KeyboardChoice( hItems )   (POR HACER #ToDo )
+   METHOD KeyboardChoice( uChatId, cText, aChoices, lResizeKeyboard, lOneTime )   
 
    METHOD addQuestion( uChatID, cIdQuestion )  INLINE hb_hSet( ::hOpenQuestion, uChatID, cIdQuestion )
 
@@ -330,6 +333,8 @@ METHOD sendMessage( uChatId, cText,  oMsg, hOthers ) CLASS TLGRMBOT
 
    if VALTYPE(uChatId) = "C" ; uChatId := ALLTRIM(uChatId) ; endif
    if empty( cText ) ; return "" ; endif
+
+   ::sendChatAction( uChatId, "typing" )
 
    hParams := Hash()
    //hParams["&"] := ""
@@ -497,11 +502,49 @@ RETURN ::Execute( "sendMediaGroup", hParams )
 /*
  *
  */
+METHOD sendAnimation( uChatId, cAnimationPath, oMsg, hOptionals ) CLASS TLGRMBOT
+   local hTgm, hParams
+
+   if VALTYPE(uChatId) = "C" ; uChatId := ALLTRIM(uChatId) ; endif
+
+   ::sendChatAction( uChatId, "upload_video" )
+
+   hParams := Hash()
+   
+   if hb_IsObject( oMsg )
+      hParams["reply_to_message_id"] := oMsg:id
+   endif
+
+   hParams["chat_id"] := uChatId
+
+   hParams["parse_mode"] := "HTML" //"Markdown"
+   hParams["animation"]  := cAnimationPath
+
+   if hb_isHash( hOptionals ) .and. !Empty( hOptionals )
+      HEVAL( hOptionals, {|key,value |  hb_hSet( hParams, key, value ) } )
+tracelog  hb_valtoexp(hOptionals)
+   endif
+
+   hTgm := ::Execute( "sendAnimation", hParams )
+   
+   if !hb_ISHash( hTgm )
+      RETURN .F.
+   endif
+
+RETURN .t.
+
+
+
+/*
+ *
+ */
 METHOD sendVideo( uChatId, cCaption, cImagePath, oMsg, hOptionals ) CLASS TLGRMBOT
    local hTgm, hParams//, uItem, hResult
 
    if VALTYPE(uChatId) = "C" ; uChatId := ALLTRIM(uChatId) ; endif
    if empty( cCaption ) ; return "" ; endif
+
+   ::sendChatAction( uChatId, "upload_video" )
 
    hParams := Hash()
    
@@ -541,6 +584,8 @@ METHOD sendPhoto( uChatId, cCaption, cImagePath, oMsg, hOptionals ) CLASS TLGRMB
 
    if VALTYPE(uChatId) = "C" ; uChatId := ALLTRIM(uChatId) ; endif
    if empty( cCaption ) ; return "" ; endif
+
+   ::sendChatAction( uChatId, "upload_photo" )
 
    hParams := Hash()
    
@@ -625,6 +670,8 @@ METHOD sendVoice( uChatId, cCaption, cVoice, hOptionals, hOthers )  CLASS TLGRMB
       return .f.
    endif
 
+   ::sendChatAction( uChatId, "record_audio" )
+
    hVoice["chat_id" ] := uChatId
    hVoice["caption"]  := iif( !hb_strIsUTF8(cCaption), hb_strToUtf8(cCaption), cCaption )
    hVoice["voice"]    := cVoice
@@ -634,7 +681,10 @@ METHOD sendVoice( uChatId, cCaption, cVoice, hOptionals, hOthers )  CLASS TLGRMB
    CheckParam( hOptionals, @hVoice, "disable_notification" )
    CheckParam( hOptionals, @hVoice, "reply_to_message_id" )
 
-   
+   if !hb_hHasKey( hVoice, "parse_mode" )   
+      hVoice["parse_mode"] := "HTML" //"Markdown"
+   endif
+
    if !Empty( hOthers )
       hVoice["reply_markup"] := hOthers
    endif
@@ -706,8 +756,29 @@ METHOD InlineChoice( uChatId, cText, aOptions, oMsg, ... ) CLASS TLGRMBOT
    tracelog hb_jsonEncode(hKBtn)
  
    if !hb_StrIsUTF8( cText ) ; cText := hb_StrToUTF8(cText) ; endif
-   hResult := ::SendMessage( uChatId, cText, oMsg, hb_jsonEncode(hKBtn), ... )
+   hResult := ::SendMessage( uChatId, cText, oMsg, hKBtn, ... )
 RETURN hresult
+
+
+
+/**
+ *
+ */
+METHOD keyboardChoice( uChatId, cText, aChoices, lResizeKeyboard, lOneTime )
+   LOCAL hParams := {=>}
+   LOCAL hKeyboard := hb_jsonDecode( hb_jsonEncode( { aChoices } ) )
+   
+   hb_default( @lResizeKeyboard, .T. )
+   hb_default( @lOneTime, .T. )
+   
+   hParams[ "chat_id" ] := __CHATID( uChatId )
+   hParams[ "text" ] := cText 
+   hParams[ "parse_mode" ] := "MARKDOWN" 
+   hParams[ "reply_markup" ] := { "keyboard"          => hKeyboard, ;
+                                  "resize_keyboard"   => lResizeKeyboard, ;
+                                  "one_time_keyboard" => lOneTime }
+   //
+   RETURN HB_ISHASH( ::execute( "sendMessage", hParams ) )
 
 
 
@@ -984,6 +1055,7 @@ tracelog time()+". Cycle counter...", nCont
 
 
    hTgm := hb_jsonDecode( cResp )
+
    curl_easy_reset( ::pCurl )
 
    curl_easy_cleanup( ::pCURL )
@@ -992,7 +1064,7 @@ tracelog time()+". Cycle counter...", nCont
    ::lRunning := .f.
 
    /*Manipulate the possible error that can throw cURL*/
-   if Empty( hTgm )
+   if !hb_isHash(hTgm) .or. Empty( hTgm )
       cError :=  "No answer, empty container."
       tracelog cError
       return NIL
@@ -1003,7 +1075,8 @@ tracelog time()+". Cycle counter...", nCont
       tracelog cError
    endif
 
-   if !Empty( hTgm["result"] )
+   //tracelog hb_valtoexp(hTgm)
+   if hb_hHasKey( hTgm, "result" ) .and. !Empty( hTgm["result"] )
       tracelog "Update: "+hb_eol()+cResp
    endif
 RETURN hTgm 
@@ -1028,7 +1101,7 @@ METHOD SetCommand( cCommand, bAction, ... ) CLASS TLGRMBOT
       return .f.
    endif
 
-tracelog "Incorporando comando ", cCommand //, hb_eol(), "Contenido", cAction 
+tracelog "Incorporating command  ", cCommand 
    hb_hSet( ::hCommands, cCommand, bAction, ... )
 tracelog hb_valtoexp(::hCommands)
 RETURN .t.
@@ -1042,7 +1115,7 @@ METHOD Reply() CLASS TLGRMBOT
    local oUpdate := ::oUpdates:Current()
    local aTokens := oUpdate:tokens
    //local lCallBack := .f.
-   local oFrom, oMsg, cCommand, oErr, cText
+   local oFrom, oMsg, cCommand /*, oErr, cText*/
 
    //tracelog "tokens", hb_valtoexp( aTokens ) //oUpdate:tokens )
 
@@ -1144,7 +1217,7 @@ CLASS TLGRM_UPDATES
    METHOD Eof()         INLINE ::lEof
 
    METHOD Current( nPos ) 
-   METHOD Values()        INLINE hb_hKeys( ::oUpdate:hVars )
+   METHOD Values()      INLINE hb_hKeys( ::oUpdate:hVars )
    METHOD Next( nMove ) 
    METHOD Skip( nPos )  INLINE ::Next( nPos )
 
@@ -1472,7 +1545,7 @@ METHOD Resume() CLASS TLGRM_UPDATE
                                       cLastName +;
                                       iif( !Empty(cUserName),cUserName+hb_eol(),+"")
 //      cResume += "Fecha: "+DTOC( NToT( oMsg:date ) ) + hb_eol()
-      cResume += "Texto: "+::callback_query:data
+      cResume += "Text: "+::callback_query:data
 
    Case ::type = "message"
       oMsg := ::message
@@ -1489,7 +1562,7 @@ METHOD Resume() CLASS TLGRM_UPDATE
                                       iif( !Empty(cUserName),cUserName+hb_eol(),+"")
 //      cResume += "Fecha: "+DTOC( NToT( oMsg:date ) ) + hb_eol()
       if oMsg:IsDef( "text" )
-         cResume += "Texto: " + oMsg:text
+         cResume += "Text: " + oMsg:text
       endif
       
 
